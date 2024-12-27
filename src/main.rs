@@ -15,7 +15,7 @@ use tracing::error;
 use tracing::info;
 use tweety_rs::TweetyClient;
 
-const DEFAULT_CRONJOB: &str = "0 30 13-21 * * 1-5";
+const DEFAULT_CRONJOB: &str = "0 0,30 13-21 * * Mon-Fri";
 
 #[tokio::main]
 async fn main() {
