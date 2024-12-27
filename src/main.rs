@@ -11,6 +11,8 @@ use anyhow::Result;
 use apalis::prelude::*;
 use apalis_cron::CronStream;
 use apalis_cron::Schedule;
+use atrium_api::app::bsky::feed::post::RecordData;
+use bsky_sdk::BskyAgent;
 use chrono::Local;
 use chrono::{DateTime, Utc};
 use dotenv::dotenv;
@@ -29,6 +31,9 @@ async fn main() {
 
     let cronjob = env::var("CRONJOB").unwrap_or(DEFAULT_CRONJOB.to_string());
     let twitter_client = create_twitter_client();
+    let bsky_client = create_bsky_client()
+        .await
+        .expect("Failed to create Bsky client");
     let schedule = Schedule::from_str(&cronjob).unwrap();
     let bovespa_value = Arc::new(Mutex::new(None::<f64>));
     let backoff = create_backoff();
@@ -42,6 +47,7 @@ async fn main() {
             bovespa_value,
             twitter_client: Arc::new(twitter_client),
             backoff: Arc::new(Mutex::new(backoff)),
+            bsky_client: Arc::new(bsky_client),
         })
         .backend(CronStream::new(schedule))
         .build_fn(execute_bovespa);
@@ -50,6 +56,16 @@ async fn main() {
         .run()
         .await
         .expect("Failed to run monitor");
+}
+
+async fn create_bsky_client() -> Result<BskyAgent> {
+    let login = env::var("BSKY_LOGIN").expect("BSKY_LOGIN must be set");
+    let password = env::var("BSKY_PASSWORD").expect("BSKY_PASSWORD must be set");
+
+    let agent = BskyAgent::builder().build().await?;
+    agent.login(login, password).await?;
+
+    Ok(agent)
 }
 
 fn create_twitter_client() -> TweetyClient {
@@ -73,6 +89,7 @@ struct BovespaService {
     bovespa_value: Arc<Mutex<Option<f64>>>,
     twitter_client: Arc<TweetyClient>,
     backoff: Arc<Mutex<ExponentialBackoff>>,
+    bsky_client: Arc<BskyAgent>,
 }
 impl BovespaService {
     async fn execute(&self, job: Job) -> Result<()> {
@@ -122,6 +139,7 @@ impl BovespaService {
         };
         info!("{}", msg);
         post_tweet(self.twitter_client.clone(), &msg).await;
+        post_bsky(self.bsky_client.clone(), &msg).await?;
         Ok(())
     }
 }
@@ -151,6 +169,23 @@ async fn post_tweet(client: Arc<TweetyClient>, message: &str) {
         Ok(_) => info!("Tweet posted successfully: {}", message),
         Err(e) => error!("Failed to post tweet: {}", e),
     }
+}
+
+async fn post_bsky(client: Arc<BskyAgent>, message: &str) -> Result<()> {
+    client
+        .create_record(RecordData {
+            created_at: atrium_api::types::string::Datetime::now(),
+            embed: None,
+            entities: None,
+            facets: None,
+            labels: None,
+            langs: None,
+            reply: None,
+            tags: None,
+            text: message.to_string(),
+        })
+        .await?;
+    Ok(())
 }
 
 #[derive(Default, Debug, Clone)]
