@@ -17,3 +17,4 @@ tracing-subscriber = { version = "0.3.19", default-features = false, features = 
 tower = { version = "0.5", features = ["load-shed"] }
 tracing = { version = "0.1.41", default-features = false }
 dotenv = "0.15.0"
+adaptive_backoff = "0.2.1"

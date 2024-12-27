@@ -1,7 +1,12 @@
 use std::env;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
+use adaptive_backoff::prelude::Backoff;
+use adaptive_backoff::prelude::BackoffBuilder;
+use adaptive_backoff::prelude::ExponentialBackoff;
+use adaptive_backoff::prelude::ExponentialBackoffBuilder;
 use anyhow::Result;
 use apalis::prelude::*;
 use apalis_cron::CronStream;
@@ -26,6 +31,7 @@ async fn main() {
     let twitter_client = create_twitter_client();
     let schedule = Schedule::from_str(&cronjob).unwrap();
     let bovespa_value = Arc::new(Mutex::new(None::<f64>));
+    let backoff = create_backoff();
 
     info!("Starting SMSB worker with cronjob: {}", cronjob);
 
@@ -35,9 +41,10 @@ async fn main() {
         .data(BovespaService {
             bovespa_value,
             twitter_client: Arc::new(twitter_client),
+            backoff: Arc::new(Mutex::new(backoff)),
         })
         .backend(CronStream::new(schedule))
-        .build_fn(execute);
+        .build_fn(execute_bovespa);
     Monitor::new()
         .register(worker)
         .run()
@@ -65,9 +72,27 @@ fn create_twitter_client() -> TweetyClient {
 struct BovespaService {
     bovespa_value: Arc<Mutex<Option<f64>>>,
     twitter_client: Arc<TweetyClient>,
+    backoff: Arc<Mutex<ExponentialBackoff>>,
 }
 impl BovespaService {
     async fn execute(&self, job: Job) -> Result<()> {
+        let mut backoff = self.backoff.lock().await;
+        loop {
+            match self.execute_inner(job.clone()).await {
+                Ok(_) => {
+                    backoff.reset();
+                    break;
+                }
+                Err(e) => {
+                    error!("Failed to execute job: {}", e);
+                    tokio::time::sleep(backoff.wait()).await;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn execute_inner(&self, job: Job) -> Result<()> {
         dbg!(&job.0);
         let new_value = fetch_bovespa().await?;
         let mut guard = self.bovespa_value.lock().await;
@@ -135,9 +160,18 @@ impl From<DateTime<Utc>> for Job {
         Job(t)
     }
 }
-async fn execute(job: Job, svc: Data<BovespaService>) {
+async fn execute_bovespa(job: Job, svc: Data<BovespaService>) {
     match svc.execute(job).await {
         Ok(_) => info!("Job executed successfully"),
-        Err(e) => error!("Failed to execute job: {}", e),
+        Err(e) => error!("Failed to execute bovespa service: {}", e),
     }
+}
+
+fn create_backoff() -> ExponentialBackoff {
+    ExponentialBackoffBuilder::default()
+        .factor(1.1)
+        .min(Duration::from_secs(1))
+        .max(Duration::from_secs(300))
+        .build()
+        .unwrap()
 }
