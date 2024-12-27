@@ -27,6 +27,8 @@ async fn main() {
     let schedule = Schedule::from_str(&cronjob).unwrap();
     let bovespa_value = Arc::new(Mutex::new(None::<f64>));
 
+    info!("Starting SMSB worker with cronjob: {}", cronjob);
+
     let worker = WorkerBuilder::new("smsb")
         .enable_tracing()
         .layer(LoadShedLayer::new())
