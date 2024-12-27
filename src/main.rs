@@ -16,6 +16,7 @@ use bsky_sdk::BskyAgent;
 use chrono::Local;
 use chrono::{DateTime, Utc};
 use dotenv::dotenv;
+use separator::Separatable;
 use tokio::sync::Mutex;
 use tower::load_shed::LoadShedLayer;
 use tracing::error;
@@ -23,7 +24,7 @@ use tracing::info;
 use tweety_rs::TweetyClient;
 
 const DEFAULT_CRONJOB: &str = "0 0,30 13-21 * * Mon-Fri";
-
+const BOVESPA_FETCH_URL: &str = "https://query1.finance.yahoo.com/v8/finance/chart/%5EBVSP?interval=1m&includePrePost=true&events=div%7Csplit%7Cearn&&lang=en-US&region=US";
 #[tokio::main]
 async fn main() {
     dotenv().ok();
@@ -117,23 +118,25 @@ impl BovespaService {
         *guard = Some(new_value);
         drop(guard);
 
+        let formatted_value = separate_decimals_brazilian(new_value);
+
         let msg = if (new_value - last_value).abs() < f64::EPSILON {
             info!(
-                "A Bovespa não mudou :| - {:.2} às {}",
-                new_value,
+                "A Bovespa não mudou :| - {} às {}",
+                formatted_value,
                 Local::now().format("%I:%M %p")
             );
             return Ok(());
         } else if new_value > last_value {
             format!(
-                "A Bovespa subiu :) - {:.2} às {}",
-                new_value,
+                "A Bovespa subiu :) - {} às {}",
+                formatted_value,
                 Local::now().format("%I:%M %p")
             )
         } else {
             format!(
-                "A Bovespa caiu :( - {:.2} às {}",
-                new_value,
+                "A Bovespa caiu :( - {} às {}",
+                formatted_value,
                 Local::now().format("%I:%M %p")
             )
         };
@@ -145,14 +148,13 @@ impl BovespaService {
 }
 
 async fn fetch_bovespa() -> Result<f64> {
-    let url = "https://query1.finance.yahoo.com/v8/finance/chart/%5EBVSP?interval=1m&includePrePost=true&events=div%7Csplit%7Cearn&&lang=en-US&region=US";
-    info!("Fetching Bovespa value from {}", url);
+    info!("Fetching Bovespa value from {}", BOVESPA_FETCH_URL);
     let client = reqwest::ClientBuilder::new()
         .user_agent("Mozilla/5.0 (X11; Linux x86_64)")
         .build()?;
 
     let response = client
-        .get(url)
+        .get(BOVESPA_FETCH_URL)
         .send()
         .await?
         .json::<serde_json::Value>()
@@ -209,4 +211,58 @@ fn create_backoff() -> ExponentialBackoff {
         .max(Duration::from_secs(300))
         .build()
         .unwrap()
+}
+
+fn separate_decimals(value: f64) -> String {
+    let separated = value.separated_string();
+    let decimal_separated = separated.split('.').collect::<Vec<&str>>();
+    let integer = decimal_separated[0];
+    let decimal = decimal_separated[1];
+    if decimal.len() > 2 {
+        return integer.to_owned() + "." + &decimal[0..2];
+    }
+
+    if decimal.len() == 1 {
+        return integer.to_owned() + "." + decimal + "0";
+    }
+    separated
+}
+
+fn separate_decimals_brazilian(value: f64) -> String {
+    let normal = separate_decimals(value);
+
+    let decimal_separated = normal.split('.').collect::<Vec<&str>>();
+    let integer = decimal_separated[0];
+    let decimal = decimal_separated[1];
+    let mut formatted = integer.replace(",", ".");
+    formatted.push(',');
+    formatted.push_str(decimal);
+    formatted
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_set_decimal_places() {
+        assert_eq!(separate_decimals(2312321321.32323), "2,312,321,321.32");
+        assert_eq!(separate_decimals(2312321321.3), "2,312,321,321.30");
+        assert_eq!(separate_decimals(120276.98), "120,276.98");
+        assert_eq!(separate_decimals(0.98), "0.98");
+    }
+
+    #[test]
+    fn test_separate_decimal_brazilian_style() {
+        assert_eq!(
+            separate_decimals_brazilian(2312321321.32323),
+            "2.312.321.321,32"
+        );
+        assert_eq!(
+            separate_decimals_brazilian(2312321321.3),
+            "2.312.321.321,30"
+        );
+        assert_eq!(separate_decimals_brazilian(120276.98), "120.276,98");
+        assert_eq!(separate_decimals_brazilian(0.98), "0,98");
+    }
 }
